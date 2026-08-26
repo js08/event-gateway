@@ -1,0 +1,41 @@
+services:
+  event-gateway:
+    build:
+      context: ./event-gateway/event-gateway
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - ACCOUNT_SERVICE_URL=http://account-service:8081
+    depends_on:
+      - account-service
+    networks:
+      - event-ledger-network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  account-service:
+    build:
+      context: ./account-service/account-service
+      dockerfile: Dockerfile
+    ports:
+      - "8081:8081"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+    networks:
+      - event-ledger-network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8081/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  event-ledger-network:
+    driver: bridge
