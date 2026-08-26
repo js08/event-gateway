@@ -7,11 +7,14 @@ import com.eventledger.gateway.client.AccountServiceClient;
 import com.eventledger.gateway.dto.EventRequest;
 import com.eventledger.gateway.dto.EventResponse;
 import com.eventledger.gateway.entity.EventEntity;
+import com.eventledger.gateway.exception.AccountServiceUnavailableException;
 import com.eventledger.gateway.exception.ResourceNotFoundException;
 import com.eventledger.gateway.repository.EventRepository;
 import com.eventledger.gateway.service.EventService;
-import lombok.RequiredArgsConstructor;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -23,26 +26,56 @@ import java.util.stream.Collectors;
 
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class EventServiceImpl implements EventService {
 
     private final EventRepository eventRepository;
     private final AccountServiceClient accountServiceClient;
     private final ObjectMapper objectMapper;
+    private final Counter eventsReceivedCounter;
+    private final Counter duplicateEventsCounter;
+
+    public EventServiceImpl(EventRepository eventRepository, 
+                           AccountServiceClient accountServiceClient,
+                           ObjectMapper objectMapper,
+                           MeterRegistry meterRegistry) {
+        this.eventRepository = eventRepository;
+        this.accountServiceClient = accountServiceClient;
+        this.objectMapper = objectMapper;
+        this.eventsReceivedCounter = Counter.builder("events_received_total")
+                .description("Total events received by Gateway")
+                .register(meterRegistry);
+        this.duplicateEventsCounter = Counter.builder("duplicate_events_total")
+                .description("Total duplicate events detected")
+                .register(meterRegistry);
+    }
 
     @Override
-    @Transactional
     public EventResponse processEvent(EventRequest request) {
+        eventsReceivedCounter.increment();
         log.info("Processing eventId: {} for accountId: {}", request.getEventId(), request.getAccountId());
 
         // 1. Idempotency Check: Return existing event if eventId was already submitted
         Optional<EventEntity> existingEntity = eventRepository.findById(request.getEventId());
         if (existingEntity.isPresent()) {
+            duplicateEventsCounter.increment();
             log.warn("Duplicate event submission detected for eventId: {}. Returning stored event (Idempotent response).", request.getEventId());
             return mapToResponse(existingEntity.get());
         }
 
-        // 2. Persist Event locally in Gateway DB
+        // 2. Persist Event locally in Gateway DB FIRST (in separate transaction)
+        EventEntity savedEntity = persistEvent(request);
+        log.info("EventId: {} successfully stored in local Gateway DB", savedEntity.getEventId());
+
+        // 3. Synchronize with Account Service (Triggers Circuit Breaker if Account Service is DOWN)
+        // This will throw AccountServiceUnavailableException if the service is down
+        // But the event is already saved, so it won't be lost
+        accountServiceClient.processTransaction(request);
+
+        return mapToResponse(savedEntity);
+    }
+
+    @Transactional
+    private EventEntity persistEvent(EventRequest request) {
         EventEntity entity = EventEntity.builder()
                 .eventId(request.getEventId())
                 .accountId(request.getAccountId())
@@ -53,13 +86,7 @@ public class EventServiceImpl implements EventService {
                 .metadataJson(serializeMetadata(request.getMetadata()))
                 .build();
 
-        EventEntity savedEntity = eventRepository.save(entity);
-        log.info("EventId: {} successfully stored in local Gateway DB", savedEntity.getEventId());
-
-        // 3. Synchronize with Account Service (Triggers Circuit Breaker if Account Service is DOWN)
-        accountServiceClient.processTransaction(request);
-
-        return mapToResponse(savedEntity);
+        return eventRepository.save(entity);
     }
 
     @Override

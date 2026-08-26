@@ -16,7 +16,7 @@ import java.util.List;
 @RestController
 @RequestMapping("/events")
 @RequiredArgsConstructor
-@CrossOrigin(origins = "*") // Allows React running on any port to call these API endpoints
+@CrossOrigin(origins = "*")
 public class EventController {
 
     private final EventService eventService;
@@ -27,7 +27,10 @@ public class EventController {
                 request.getEventId(), request.getAccountId());
 
         EventResponse response = eventService.processEvent(request);
-        return ResponseEntity.status(HttpStatus.OK).body(response);
+        
+        // Return 201 CREATED for new events (createdAt matches response time)
+        // Return 200 OK for duplicate/idempotent responses (createdAt is older)
+        return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 
     @GetMapping("/{id}")

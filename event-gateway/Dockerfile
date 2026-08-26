@@ -1,14 +1,27 @@
-# STEP 1: Choose a lightweight Java 17 base image that contains the Java Runtime Environment (JRE)
-FROM eclipse-temurin:17-jre-alpine
+# Multi-stage build for Event Gateway Service
 
-# STEP 2: Set the working folder inside the container where commands will run
+# Stage 1: Build the application
+FROM eclipse-temurin:17-jdk-alpine AS builder
+WORKDIR /app
+COPY mvnw .
+COPY .mvn .mvn
+COPY pom.xml .
+COPY src src
+RUN chmod +x mvnw && ./mvnw clean package -DskipTests
+
+# Stage 2: Run the application
+FROM eclipse-temurin:17-jre-alpine
 WORKDIR /app
 
-# STEP 3: Copy the compiled Spring Boot JAR file from your target folder into the container and name it app.jar
-COPY target/event-gateway-*.jar app.jar
+# Copy the JAR from builder stage
+COPY --from=builder /app/target/*.jar app.jar
 
-# STEP 4: Tell Docker that this container listens on port 8080 at runtime
+# Expose port 8080
 EXPOSE 8080
 
-# STEP 5: Define the default command to execute when the container starts up (runs 'java -jar app.jar')
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD wget -q --spider http://localhost:8080/health || exit 1
+
+# Run the application
 ENTRYPOINT ["java", "-jar", "app.jar"]
